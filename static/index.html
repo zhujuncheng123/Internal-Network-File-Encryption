@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>内网加密文件传输</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0; --muted:#94a3b8; --acc:#38bdf8; --ok:#34d399; --warn:#fbbf24; --err:#f87171; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--txt); min-height:100vh; display:flex; flex-direction:column; }
+  header { padding:14px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  header h1 { font-size:18px; margin:0; }
+  .tag { font-size:12px; color:var(--ok); background:rgba(52,211,153,.12); padding:2px 8px; border-radius:10px; }
+  main { flex:1; padding:24px; max-width:1000px; width:100%; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  h2 { font-size:15px; margin:0 0 14px; }
+  input,button,select { font-size:14px; border-radius:8px; font-family:inherit; }
+  input,select { background:#0b1220; border:1px solid var(--line); color:var(--txt); padding:9px 12px; width:100%; }
+  button { border:none; cursor:pointer; padding:9px 16px; font-weight:600; }
+  .btn { background:var(--acc); color:#06121f; }
+  .btn-ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  .btn-danger { background:transparent; border:1px solid var(--err); color:var(--err); }
+  .row { display:flex; gap:10px; align-items:center; }
+  .col { display:flex; flex-direction:column; gap:10px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .err { color:var(--err); font-size:13px; min-height:18px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; white-space:nowrap; }
+  a { color:var(--acc); text-decoration:none; cursor:pointer; }
+  .hidden { display:none !important; }
+  .badge { font-size:11px; padding:1px 7px; border-radius:8px; }
+  .badge-owner { background:rgba(56,189,248,.15); color:var(--acc); }
+  .badge-shared { background:rgba(251,191,36,.15); color:var(--warn); }
+  .badge-exp { background:rgba(248,113,113,.15); color:var(--err); }
+  #drop { border:2px dashed var(--line); border-radius:12px; padding:28px; text-align:center; color:var(--muted); cursor:pointer; }
+  #drop.over { border-color:var(--acc); color:var(--acc); }
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; margin-top:8px; }
+  .bar > div { height:100%; background:var(--acc); width:0; transition:width .2s; }
+  .toast { position:fixed; bottom:20px; right:20px; background:var(--card); border:1px solid var(--line);
+           padding:12px 18px; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.4); z-index:50; }
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:40; }
+  .modal { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; width:480px; max-width:92vw; }
+  .modal h3 { margin:0 0 14px; font-size:15px; }
+  .modal-scroll { max-height:55vh; overflow-y:auto; }
+  .list-item { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line); }
+</style>
+<script src="fflate.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>🔐 内网加密文件传输</h1>
+  <div class="row">
+    <span class="tag">端到端加密 · 多接收方</span>
+    <span id="whoami" class="muted"></span>
+    <button id="btnAudit" class="btn-ghost hidden">审计日志</button>
+    <button id="logout" class="btn-ghost hidden">退出</button>
+  </div>
+</header>
+
+<main>
+  <!-- 登录/注册 -->
+  <div id="auth" class="card">
+    <h2>登录</h2>
+    <p class="muted">首次使用请先「注册新用户」——系统会为你在浏览器本地生成一对 RSA 密钥，私钥用你的登录口令加密后存储。</p>
+    <div class="col">
+      <input id="username" placeholder="用户名" autocomplete="username">
+      <input id="password" type="password" placeholder="口令（≥8位）" autocomplete="current-password">
+      <div class="err" id="authErr"></div>
+      <div class="row">
+        <button class="btn" id="btnLogin">登录</button>
+        <button class="btn-ghost" id="btnRegister">注册新用户</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 应用 -->
+  <div id="app" class="hidden">
+    <div class="card">
+      <h2>上传文件</h2>
+      <p class="muted">文件在浏览器内用 AES-256-GCM 加密后上传。你无需为文件单独设口令——系统用你的密钥自动保护，并可安全共享给其他成员。</p>
+      <div id="drop">点击选择文件，或拖拽到此处</div>
+      <input type="file" id="fileInput" class="hidden">
+      <p id="upHint" class="muted hidden" style="margin:10px 0 0;">⚠️ 管理员免审模式：可上传任意类型文件（含脚本/可执行），由你本人确认安全性后分发。</p>
+      <div class="col" style="margin-top:12px;">
+        <label class="muted" style="margin-bottom:4px;">保存时间（到期自动删除）</label>
+        <select id="retentionDays">
+          <option value="0">永久保存</option>
+          <option value="1">1 天</option>
+          <option value="7" selected>7 天</option>
+          <option value="30">30 天</option>
+          <option value="90">90 天</option>
+          <option value="custom">自定义时间…</option>
+        </select>
+        <input id="expiresAt" type="datetime-local" class="hidden" placeholder="自定义过期时间">
+        <div class="err" id="upErr"></div>
+        <button class="btn" id="btnUpload">加密并上传</button>
+        <div class="bar hidden" id="upBar"><div></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>我的文件</h2>
+      <table>
+        <thead><tr><th>文件名</th><th>大小</th><th>来源</th><th>状态</th><th>上传时间</th><th>操作</th></tr></thead>
+        <tbody id="fileList"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<!-- 共享模态框 -->
+<div id="shareModal" class="modal-bg hidden">
+  <div class="modal">
+    <h3>共享文件</h3>
+    <div class="col">
+      <input id="shareSearch" placeholder="搜索用户名…">
+      <div id="shareResults" class="col"></div>
+      <div class="muted" id="shareHint"></div>
+      <div class="err" id="shareErr"></div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn-ghost" id="btnShareClose">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 访问列表模态框 -->
+<div id="accModal" class="modal-bg hidden">
+  <div class="modal">
+    <h3>谁可以访问</h3>
+    <div id="accList" class="col"></div>
+    <div class="err" id="accErr"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:12px;">
+      <button class="btn-ghost" id="btnAccClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 审计模态框 -->
+<div id="auditModal" class="modal-bg hidden">
+  <div class="modal" style="width:860px;">
+    <h3>操作审计日志</h3>
+    <div class="row" style="margin-bottom:10px;">
+      <input id="auditSearch" placeholder="搜索 IP / 用户名 / 文件名 / 动作…" style="flex:1;">
+      <button class="btn-ghost" id="btnAuditSearch">搜索</button>
+    </div>
+    <div class="modal-scroll">
+      <table>
+        <thead><tr><th>时间</th><th>用户</th><th>动作</th><th>文件</th><th>目标</th><th>IP</th></tr></thead>
+        <tbody id="auditList"></tbody>
+      </table>
+    </div>
+    <div class="row" style="justify-content:space-between; align-items:center; margin-top:10px;">
+      <span class="muted" id="auditPageInfo"></span>
+      <span class="row" style="gap:8px;">
+        <button class="btn-ghost" id="btnAuditPrev">上一页</button>
+        <button class="btn-ghost" id="btnAuditNext">下一页</button>
+      </span>
+    </div>
+    <div class="row" style="justify-content:flex-end; margin-top:12px;">
+      <button class="btn-ghost" id="btnAuditLogout">退出登录</button>
+      <button class="btn" id="btnAuditClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let TOKEN = localStorage.getItem('st_token') || '';
+let USERNAME = localStorage.getItem('st_user') || '';
+let IS_ADMIN = localStorage.getItem('st_admin') === '1';
+let privateKey = null;   // CryptoKey (RSA 私钥，仅存内存)
+let pendingFile = null;
+let shareFileId = null;
+let accFileId = null;
+
+// ---------- 工具 ----------
+const b64buf = buf => { const u=new Uint8Array(buf); return btoa(String.fromCharCode(...u)); };
+const bufFromB64 = s => { const bin=atob(s); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); return u; };
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'),2600); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const fmtSize = n => n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
+
+async function api(path, opts={}){
+  const headers = { ...(opts.headers||{}) };
+  if (TOKEN) headers['Authorization'] = 'Bearer '+TOKEN;
+  const res = await fetch(path, { ...opts, headers });
+  if (!res.ok){
+    let d=''; try{ d=(await res.json()).detail || ''; }catch(e){}
+    throw new Error(d || ('HTTP '+res.status));
+  }
+  return res;
+}
+
+// ---------- 密钥派生 / RSA ----------
+async function deriveKEK(passphrase, salt){
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name:'PBKDF2', salt, iterations:310000, hash:'SHA-256' },
+    key, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt','wrapKey','unwrapKey']
+  );
+}
+
+async function generateKeypair(){
+  return crypto.subtle.generateKey(
+    { name:'RSA-OAEP', modulusLength:2048, publicExponent:new Uint8Array([1,0,1]), hash:'SHA-256' },
+    true, ['encrypt','decrypt','wrapKey','unwrapKey']
+  );
+}
+
+async function importPublic(spkiB64){
+  return crypto.subtle.importKey('spki', bufFromB64(spkiB64), { name:'RSA-OAEP', hash:'SHA-256' }, false, ['encrypt','wrapKey']);
+}
+async function importPrivate(pkcs8){
+  return crypto.subtle.importKey('pkcs8', pkcs8, { name:'RSA-OAEP', hash:'SHA-256' }, false, ['decrypt','unwrapKey']);
+}
+
+// RSA-OAEP 封装/解封 fileKey
+async function wrapFileKeyForRSA(fileKey, publicKeyCryptoKey){
+  return crypto.subtle.encrypt({ name:'RSA-OAEP' }, publicKeyCryptoKey, fileKey);
+}
+async function unwrapFileKeyRSA(wrappedB64, privateKeyCryptoKey){
+  return crypto.subtle.decrypt({ name:'RSA-OAEP' }, privateKeyCryptoKey, bufFromB64(wrappedB64));
+}
+
+// 用口令封装私钥（注册时）
+async function wrapPrivateKeyWithPass(pkcs8, passphrase){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const kek = await deriveKEK(passphrase, salt);
+  const wrapped = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, kek, pkcs8);
+  return { wrapped, salt, iv };
+}
+async function unwrapPrivateKey(wrappedB64, saltB64, ivB64, passphrase){
+  const kek = await deriveKEK(passphrase, bufFromB64(saltB64));
+  const pkcs8 = await crypto.subtle.decrypt(
+    { name:'AES-GCM', iv: bufFromB64(ivB64) }, kek, bufFromB64(wrappedB64)
+  );
+  return importPrivate(new Uint8Array(pkcs8));
+}
+
+// ---------- 认证 ----------
+$('btnLogin').onclick = async () => {
+  $('authErr').textContent='';
+  const u=$('username').value.trim(), p=$('password').value;
+  if(!u||!p){ $('authErr').textContent='请输入用户名和口令'; return; }
+  try{
+    const fd=new FormData(); fd.append('username',u); fd.append('password',p);
+    const res=await fetch('/api/auth/login',{method:'POST',body:fd});
+    if(!res.ok){ const d=await res.json(); throw new Error(d.detail||'登录失败'); }
+    const data=await res.json();
+    TOKEN=data.access_token; USERNAME=data.username;
+    localStorage.setItem('st_token',TOKEN); localStorage.setItem('st_user',USERNAME);
+    // 解密私钥进内存
+    const me=await (await api('/api/auth/me')).json();
+    IS_ADMIN = !!me.is_admin;
+    localStorage.setItem('st_admin', IS_ADMIN ? '1' : '0');
+    privateKey = await unwrapPrivateKey(me.private_key_wrapped, me.kek_salt, me.kek_iv, p);
+    enterApp();
+  }catch(e){ $('authErr').textContent = e.message==='口令错误或数据损坏，无法解密' ? e.message : e.message; }
+};
+
+$('btnRegister').onclick = async () => {
+  $('authErr').textContent='';
+  const u=$('username').value.trim(), p=$('password').value;
+  if(!u||p.length<8){ $('authErr').textContent='用户名不能为空，口令至少8位'; return; }
+  try{
+    // 生成 RSA 密钥对
+    const kp = await generateKeypair();
+    const pubSpki = new Uint8Array(await crypto.subtle.exportKey('spki', kp.publicKey));
+    const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+    // 用口令封装私钥
+    const { wrapped, salt, iv } = await wrapPrivateKeyWithPass(privPkcs8, p);
+
+    const fd=new FormData();
+    fd.append('username',u); fd.append('password',p);
+    fd.append('public_key', b64buf(pubSpki));
+    fd.append('private_key_wrapped', b64buf(wrapped));
+    fd.append('kek_salt', b64buf(salt));
+    fd.append('kek_iv', b64buf(iv));
+    const res=await fetch('/api/auth/register',{method:'POST',body:fd});
+    if(!res.ok){ const d=await res.json(); throw new Error(d.detail||'注册失败'); }
+    toast('注册成功，请登录');
+  }catch(e){ $('authErr').textContent=e.message; }
+};
+
+function doLogout(){
+  TOKEN=''; USERNAME=''; IS_ADMIN=false; privateKey=null;
+  localStorage.removeItem('st_token'); localStorage.removeItem('st_user'); localStorage.removeItem('st_admin');
+  $('app').classList.add('hidden'); $('auth').classList.remove('hidden');
+  $('auditModal').classList.add('hidden');
+  $('logout').classList.add('hidden'); $('btnAudit').classList.add('hidden'); $('whoami').textContent='';
+}
+$('logout').onclick = doLogout;
+
+function enterApp(){
+  $('auth').classList.add('hidden'); $('app').classList.remove('hidden');
+  $('logout').classList.remove('hidden');
+  // 审计按钮仅管理员可见
+  $('btnAudit').classList.toggle('hidden', !IS_ADMIN);
+  $('whoami').textContent=USERNAME;
+  if (IS_ADMIN) { $('whoami').textContent += ' · 管理员';
+    $('upHint').classList.remove('hidden'); }
+  else { $('upHint').classList.add('hidden'); }
+  loadFiles();
+}
+
+// ---------- 文件加密（E2EE） ----------
+async function encryptFile(file){
+  const fileKey = await crypto.subtle.generateKey({ name:'AES-GCM', length:256 }, true, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const raw = await file.arrayBuffer();
+  const cipher = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, fileKey, raw);
+  return { cipher:new Uint8Array(cipher), fileKey, iv };
+}
+async function decryptFile(cipherBuf, fileKey, iv){
+  return new Uint8Array(await crypto.subtle.decrypt({ name:'AES-GCM', iv }, fileKey, cipherBuf));
+}
+const rawFileKey = async key => new Uint8Array(await crypto.subtle.exportKey('raw', key));
+const importFileKey = async raw => crypto.subtle.importKey('raw', raw, { name:'AES-GCM' }, false, ['decrypt']);
+
+// ---------- 文件类型检测（防投毒） ----------
+// 服务端白名单（与后端 allowed_extensions 保持一致）
+const ALLOWED_EXT = new Set(['jpg','jpeg','png','gif','webp','bmp','pdf','docx','xlsx','pptx','txt','csv','md','zip','mp3','wav','mp4','mov']);
+
+// 压缩包扫描上限（防压缩炸弹 / 嵌套滥用）
+const MAX_ZIP_ENTRIES = 1000;
+const MAX_ZIP_TOTAL = 512 * 1024 * 1024; // 512MB
+const MAX_ZIP_DEPTH = 5;
+
+// 纯字节魔数判断（普通文件与压缩包内条目共用）
+function sniffBytes(buf){
+  const hex = n => n.toString(16).padStart(2,'0');
+  const h = Array.from(buf.slice(0, 64)).map(hex).join('').toUpperCase();
+  const b = (i)=>buf[i];
+
+  // ---- 危险魔数黑名单（无论扩展名，一律拒绝） ----
+  if (b(0)===0x4D && b(1)===0x5A) return { kind:'danger', name:'Windows可执行文件(EXE/DLL)' };
+  if (b(0)===0x7F && b(1)===0x45 && b(2)===0x4C && b(3)===0x46) return { kind:'danger', name:'Linux可执行文件(ELF)' };
+  if ((b(0)===0xFE&&b(1)===0xED&&b(2)===0xFA&&b(3)===0xCE) || (b(0)===0xCE&&b(1)===0xFA&&b(2)===0xED&&b(3)===0xFE) ||
+      (b(0)===0xCF&&b(1)===0xFA&&b(2)===0xED&&b(3)===0xFE))
+      return { kind:'danger', name:'Mach-O可执行文件' };
+  if (b(0)===0xCA&&b(1)===0xFE&&b(2)===0xBA&&b(3)===0xBE) return { kind:'danger', name:'Java类文件' };
+  if (b(0)===0x23 && b(1)===0x21) return { kind:'danger', name:'脚本文件(shebang)' };
+  if (h.startsWith('D0CF11E0A1B11AE1')) return { kind:'danger', name:'旧版Office文档(宏风险)' };
+  if (h.startsWith('7B5C727466')) return { kind:'danger', name:'RTF文档' };
+  const headText = new TextDecoder('latin1').decode(buf.slice(0,64)).toLowerCase();
+  if (/^(@echo\s|\s*(rem\s|::|reg\s|powershell\s|cmd\s|wscript\s|cscript\s|mshta\s))/i.test(headText))
+    return { kind:'danger', name:'批处理/脚本文件' };
+
+  // ---- 允许类型白名单魔数 ----
+  if (h.startsWith('504B0304') || h.startsWith('504B0506') || h.startsWith('504B0708'))
+    return { kind:'allow', name:'zip' };
+  if (h.startsWith('89504E47')) return { kind:'allow', name:'png' };
+  if (h.startsWith('FFD8FF')) return { kind:'allow', name:'jpg' };
+  if (h.startsWith('474946')) return { kind:'allow', name:'gif' };
+  if (h.startsWith('424D')) return { kind:'allow', name:'bmp' };
+  if (h.startsWith('52494646') && h.slice(16,24)==='57454250') return { kind:'allow', name:'webp' };
+  if (h.startsWith('25504446')) return { kind:'allow', name:'pdf' };
+  if (b(0)===0xEF && b(1)===0xBB && b(2)===0xBF) return { kind:'allow', name:'txt' };
+  if (h.startsWith('494433')) return { kind:'allow', name:'mp3' };
+  if (h.startsWith('FFFB') || h.startsWith('FFF3') || h.startsWith('FFF2')) return { kind:'allow', name:'mp3' };
+  if (h.startsWith('52494646') && h.slice(16,24)==='57415645') return { kind:'allow', name:'wav' };
+  if (h.startsWith('0000001866747970')) return { kind:'allow', name:'mp4' };
+  if (h.startsWith('0000002066747970')) return { kind:'allow', name:'mp4' };
+  return { kind:'unknown' };
+}
+
+function extOf(name){
+  const i = name.lastIndexOf('.');
+  return i >= 0 ? name.slice(i+1).toLowerCase() : '';
+}
+
+// 递归扫描 zip 数据（含嵌套），任何危险/非法条目抛错
+function scanZipData(data, prefix, depth){
+  if (depth > MAX_ZIP_DEPTH) throw new Error('嵌套压缩包层数过深（>'+MAX_ZIP_DEPTH+' 层），已拦截');
+  let entries;
+  try { entries = fflate.unzipSync(data); }
+  catch(e){ throw new Error('压缩包无法解析（可能损坏或加密），已拦截'); }
+  const names = Object.keys(entries);
+  if (names.length > MAX_ZIP_ENTRIES) throw new Error(`压缩包含 ${names.length} 个文件，超过 ${MAX_ZIP_ENTRIES} 上限，已拦截`);
+  let total = 0;
+  for (const name of names){
+    if (name.endsWith('/') && entries[name].length === 0) continue; // 目录条目
+    const full = prefix + name;
+    if (full.startsWith('__MACOSX/') || name === '.DS_Store') continue; // macOS 元数据
+    const buf = entries[name];
+    total += buf.length;
+    if (total > MAX_ZIP_TOTAL) throw new Error('压缩包解压后过大（疑似压缩炸弹），已拦截');
+    const r = sniffBytes(buf);
+    if (r.kind === 'danger') throw new Error(`压缩包内含危险文件「${full}」（${r.name}），已拦截`);
+    if (r.kind === 'allow' && r.name === 'zip') {
+      const ext = extOf(name);
+      if (ext === 'docx' || ext === 'xlsx' || ext === 'pptx') continue; // office 文档视为合法
+      scanZipData(buf, full + '/', depth + 1); // 嵌套 zip 递归
+      continue;
+    }
+    const ext = extOf(name);
+    if (!ALLOWED_EXT.has(ext)) throw new Error(`压缩包内含不允许的文件类型「${full}」，已拦截`);
+  }
+}
+
+async function validateFileType(file){
+  const ext = extOf(file.name);
+  if (!ALLOWED_EXT.has(ext)) {
+    throw new Error(`不允许的文件类型：.${ext || '(无扩展名)'}`);
+  }
+  if (ext === 'zip') {
+    const data = new Uint8Array(await file.arrayBuffer());
+    scanZipData(data, '', 1);
+    return true;
+  }
+  const r = sniffBytes(new Uint8Array(await file.slice(0, 64).arrayBuffer()));
+  if (r.kind === 'danger') {
+    throw new Error(`检测到危险文件（${r.name}），已拦截`);
+  }
+  if (r.kind === 'allow') {
+    const textExts = new Set(['txt','csv','md']);
+    if (textExts.has(ext) && textExts.has(r.name)) return true;
+    if (r.name === 'zip') {
+      const t = await sniffZipKind(file);
+      if (t) {
+        if (ext !== t) throw new Error(`文件真实类型（${t}）与扩展名 .${ext} 不符，已拦截`);
+        return true;
+      }
+      throw new Error(`文件实际是压缩包，但扩展名为 .${ext}，已拦截`);
+    }
+    if (r.name !== ext) {
+      throw new Error(`文件真实类型（${r.name}）与扩展名 .${ext} 不符，已拦截`);
+    }
+  }
+  else if (!new Set(['txt','csv','md']).has(ext)) {
+    throw new Error(`无法识别文件真实类型，已拦截（仅纯文本 .txt/.csv/.md 允许无魔数）`);
+  }
+  return true;
+}
+
+// 在 zip 容器里找 [Content_Types].xml 判断是 docx/xlsx/pptx
+async function sniffZipKind(file){
+  try{
+    const tail = new Uint8Array(await file.slice(Math.max(0,file.size-128*1024)).arrayBuffer());
+    const s = new TextDecoder('latin1').decode(tail);
+    if (s.indexOf('[Content_Types].xml') >= 0) {
+      if (s.indexOf('word/') >= 0) return 'docx';
+      if (s.indexOf('xl/') >= 0) return 'xlsx';
+      if (s.indexOf('ppt/') >= 0) return 'pptx';
+    }
+  }catch(e){}
+  return null;
+}
+
+// ---------- 上传 ----------
+const drop=$('drop'), fileInput=$('fileInput');
+drop.onclick=()=>fileInput.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('over');};
+drop.ondragleave=()=>drop.classList.remove('over');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over'); if(e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);};
+fileInput.onchange=()=>{ if(fileInput.files.length) setFile(fileInput.files[0]); };
+function setFile(f){ pendingFile=f; drop.textContent=`已选择：${f.name}（${fmtSize(f.size)}）`; }
+
+// 保存时间控件：切换「自定义时间」时显示精确时间输入框
+$('retentionDays').onchange = () => {
+  const custom = $('retentionDays').value === 'custom';
+  $('expiresAt').classList.toggle('hidden', !custom);
+};
+
+function computeExpiry(){
+  const v = $('retentionDays').value;
+  if (v === 'custom') {
+    return $('expiresAt').value ? new Date($('expiresAt').value).toISOString() : '';
+  }
+  const days = parseInt(v, 10);
+  if (!days || days <= 0) return '';              // 永久保存
+  const d = new Date(Date.now() + days * 86400 * 1000);
+  return d.toISOString();
+}
+
+$('btnUpload').onclick = async () => {
+  $('upErr').textContent='';
+  if(!pendingFile){ $('upErr').textContent='请先选择文件'; return; }
+  const bar=$('upBar'), fill=bar.firstElementChild;
+  bar.classList.remove('hidden'); fill.style.width='10%';
+  try{
+    // 0) 文件类型检测（防投毒：白名单 + 真实类型嗅探）——管理员免审，直接跳过
+    if (!IS_ADMIN) {
+      await validateFileType(pendingFile);
+    }
+    // 1) 加密文件
+    const { cipher, fileKey, iv } = await encryptFile(pendingFile);
+    fill.style.width='40%';
+    // 2) 用自己的公钥封装 fileKey
+    const me=await (await api('/api/auth/me')).json();
+    const myPub = await importPublic(me.public_key);
+    const rawKey = await rawFileKey(fileKey);
+    const wrapped = await wrapFileKeyForRSA(rawKey, myPub);
+    fill.style.width='60%';
+    // 3) 上传
+    const expiresAt = computeExpiry();
+    const fd = new FormData();
+    fd.append('file', new Blob([cipher], {type:'application/octet-stream'}), pendingFile.name);
+    fd.append('filename', pendingFile.name);
+    fd.append('iv', b64buf(iv));
+    fd.append('wrapped_key', b64buf(wrapped));
+    fd.append('original_size', pendingFile.size);
+    fd.append('expires_at', expiresAt);
+    const res = await api('/api/files/upload', { method:'POST', body:fd });
+    fill.style.width='100%';
+    toast('上传成功（已端到端加密）');
+    pendingFile=null; drop.textContent='点击选择文件，或拖拽到此处'; $('expiresAt').value=''; $('retentionDays').value='7';
+    loadFiles();
+  }catch(e){ $('upErr').textContent=e.message; }
+  finally{ setTimeout(()=>{ bar.classList.add('hidden'); fill.style.width='0'; }, 1200); }
+};
+
+// ---------- 列表 ----------
+async function loadFiles(){
+  try{
+    const res=await api('/api/files'); const files=await res.json();
+    const tbody=$('fileList');
+    if(!files.length){ tbody.innerHTML='<tr><td colspan="6" class="muted">暂无文件</td></tr>'; return; }
+    tbody.innerHTML = files.map(f=>{
+      const expired = f.expires_at && new Date(f.expires_at) <= new Date();
+      const status = expired ? '<span class="badge badge-exp">已过期</span>'
+        : (f.expires_at ? '<span class="badge badge-exp">' + new Date(f.expires_at).toLocaleString('zh-CN') + ' 过期</span>'
+        : '<span class="badge badge-owner">永久</span>');
+      const origin = f.is_owner ? '<span class="badge badge-owner">我的</span>'
+        : '<span class="badge badge-shared">来自 '+escapeHtml(f.owner_name)+'</span>';
+      const actions = [];
+      if(!expired) actions.push(`<a data-act="dl" data-id="${f.id}" data-name="${escapeHtml(f.filename)}">下载</a>`);
+      if(f.is_owner){
+        actions.push(`<a data-act="share" data-id="${f.id}" data-name="${escapeHtml(f.filename)}">共享</a>`);
+        actions.push(`<a data-act="acc" data-id="${f.id}">权限</a>`);
+        actions.push(`<a data-act="del" data-id="${f.id}" data-name="${escapeHtml(f.filename)}" style="color:var(--err)">删除</a>`);
+      } else {
+        actions.push(`<a data-act="rm" data-id="${f.id}" data-name="${escapeHtml(f.filename)}" style="color:var(--err)">移除</a>`);
+      }
+      return `<tr>
+        <td>${escapeHtml(f.filename)}</td>
+        <td>${fmtSize(f.original_size)}</td>
+        <td>${origin}</td>
+        <td>${status}</td>
+        <td class="muted">${new Date(f.created_at).toLocaleString('zh-CN')}</td>
+        <td>${actions.join(' · ')}</td>
+      </tr>`;
+    }).join('');
+    tbody.querySelectorAll('a').forEach(a=>a.onclick=e=>{e.preventDefault(); handleAction(a.dataset);});
+  }catch(e){ $('fileList').innerHTML='<tr><td colspan="6" class="err">'+escapeHtml(e.message)+'</td></tr>'; }
+}
+
+async function handleAction(d){
+  if(d.act==='dl') await downloadFlow(d.id, d.name);
+  else if(d.act==='share') openShare(d.id, d.name);
+  else if(d.act==='acc') openAccess(d.id);
+  else if(d.act==='del'){ if(confirm(`确认删除「${d.name}」？此操作不可恢复。`)) await delFile(d.id, true); }
+  else if(d.act==='rm'){ if(confirm(`确认移除你对「${d.name}」的访问权限？`)) await delFile(d.id, false); }
+}
+
+async function delFile(id, isOwner){
+  try{
+    await api(`/api/files/${id}`, { method:'DELETE' });
+    toast(isOwner ? '已删除' : '已移除访问权限');
+    loadFiles();
+  }catch(e){ alert(e.message); }
+}
+
+// ---------- 下载 + 解密 ----------
+async function downloadFlow(fileId, name){
+  try{
+    if(!privateKey){ alert('私钥未加载，请重新登录'); return; }
+    // 1) 元数据（含自己的 wrapped_key）
+    const meta = await (await api(`/api/files/${fileId}/meta`)).json();
+    // 2) 用私钥解封 fileKey
+    let fileKeyRaw;
+    try{ fileKeyRaw = await unwrapFileKeyRSA(meta.wrapped_key, privateKey); }
+    catch(e){ throw new Error('无法解密文件密钥（可能不是你的文件或密钥失效）'); }
+    const fileKey = await importFileKey(fileKeyRaw);
+    // 3) 下载密文
+    const res = await api(`/api/files/${fileId}/download`);
+    const cipherBuf = new Uint8Array(await res.arrayBuffer());
+    // 4) 解密
+    const iv = bufFromB64(meta.iv);
+    const plain = await decryptFile(cipherBuf, fileKey, iv);
+    // 5) 保存
+    const blob = new Blob([plain]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download=name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    toast('解密完成，已开始下载');
+  }catch(e){ alert(e.message); }
+}
+
+// ---------- 共享 ----------
+function openShare(fileId, name){
+  shareFileId = fileId;
+  $('shareModal').classList.remove('hidden');
+  $('shareSearch').value=''; $('shareResults').innerHTML=''; $('shareHint').textContent='共享文件：'+name;
+  $('shareErr').textContent='';
+}
+$('btnShareClose').onclick=()=>{ $('shareModal').classList.add('hidden'); shareFileId=null; };
+$('shareSearch').oninput = debounce(async ()=>{
+  const q=$('shareSearch').value.trim();
+  if(!q){ $('shareResults').innerHTML=''; return; }
+  try{
+    const users = await (await api('/api/users/search?q='+encodeURIComponent(q))).json();
+    $('shareResults').innerHTML = users.map(u=>`
+      <div class="list-item">
+        <span>${escapeHtml(u.username)}</span>
+        <button class="btn" data-uid="${u.id}" data-uname="${escapeHtml(u.username)}">共享</button>
+      </div>`).join('');
+    $('shareResults').querySelectorAll('button').forEach(b=>b.onclick=()=>doShare(b.dataset.uid, b.dataset.uname));
+  }catch(e){ $('shareErr').textContent=e.message; }
+}, 300);
+
+async function doShare(targetUid, targetName){
+  $('shareErr').textContent='';
+  try{
+    // 需要 fileKey，但我们没有明文 fileKey 存留；需要从自己的元数据解封 fileKey 再用对方公钥重新封装。
+    const meta = await (await api(`/api/files/${shareFileId}/meta`)).json();
+    const fileKeyRaw = await unwrapFileKeyRSA(meta.wrapped_key, privateKey);
+    // 查对方公钥：通过 users/search 拿到 uid，但公钥不在 search 返回。需单独接口。
+    const target = await (await api(`/api/users/public_key/${targetUid}`)).json();
+    const targetPub = await importPublic(target.public_key);
+    const wrapped = await wrapFileKeyForRSA(fileKeyRaw, targetPub);
+    await api('/api/files/share', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ file_id: shareFileId, target_user_id: Number(targetUid), wrapped_key: b64buf(wrapped) })
+    });
+    toast('已共享给 '+targetName);
+    $('shareModal').classList.add('hidden'); shareFileId=null;
+  }catch(e){ $('shareErr').textContent=e.message; }
+}
+
+// ---------- 权限 ----------
+function openAccess(fileId){
+  accFileId = fileId;
+  $('accModal').classList.remove('hidden');
+  $('accList').innerHTML=''; $('accErr').textContent='';
+  loadAccesses();
+}
+async function loadAccesses(){
+  try{
+    const list = await (await api(`/api/files/${accFileId}/accesses`)).json();
+    $('accList').innerHTML = list.map(a=>`
+      <div class="list-item">
+        <span>${escapeHtml(a.username)} ${a.is_owner?'<span class="badge badge-owner">owner</span>':''}</span>
+        ${a.is_owner?'':'<button class="btn-danger" data-uid="'+a.id+'" data-uname="'+escapeHtml(a.username)+'">撤销</button>'}
+      </div>`).join('');
+    $('accList').querySelectorAll('button').forEach(b=>b.onclick=async ()=>{
+      if(!confirm(`撤销 ${b.dataset.uname} 的访问权限？`)){
+        try{
+          await api('/api/files/revoke', { method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ file_id: accFileId, target_user_id: Number(b.dataset.uid) }) });
+          toast('已撤销'); loadAccesses(); loadFiles();
+        }catch(e){ $('accErr').textContent=e.message; }
+      }
+    });
+  }catch(e){ $('accErr').textContent=e.message; }
+}
+$('btnAccClose').onclick=()=>{ $('accModal').classList.add('hidden'); accFileId=null; };
+
+// ---------- 审计 ----------
+let auditPage = 1, auditPageSize = 50;
+
+async function loadAudit(){
+  const q = $('auditSearch').value.trim();
+  try{
+    const params = new URLSearchParams({ page: auditPage, page_size: auditPageSize });
+    if (q) params.set('q', q);
+    const data = await (await api('/api/files/audit?' + params.toString())).json();
+    const actions = {register:'注册',login:'登录',upload:'上传',download:'下载',share:'共享',revoke:'撤销',delete:'删除',remove_access:'移除访问'};
+    $('auditList').innerHTML = (data.items||[]).map(r=>`
+      <tr>
+        <td class="muted">${new Date(r.created_at).toLocaleString('zh-CN')}</td>
+        <td>${escapeHtml(r.username)}</td>
+        <td>${actions[r.action]||r.action}</td>
+        <td>${escapeHtml(r.filename||'')}</td>
+        <td>${escapeHtml(r.target||'')}</td>
+        <td class="muted">${escapeHtml(r.ip||'')}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">暂无记录</td></tr>';
+    const pages = Math.max(1, Math.ceil((data.total||0) / auditPageSize));
+    $('auditPageInfo').textContent = `共 ${data.total} 条 · 第 ${data.page}/${pages} 页`;
+    $('btnAuditPrev').disabled = data.page <= 1;
+    $('btnAuditNext').disabled = data.page >= pages;
+  }catch(e){ $('auditList').innerHTML='<tr><td colspan="6" class="err">'+escapeHtml(e.message)+'</td></tr>'; }
+}
+
+$('btnAudit').onclick = ()=>{
+  auditPage = 1; $('auditSearch').value='';
+  $('auditModal').classList.remove('hidden');
+  loadAudit();
+};
+$('btnAuditSearch').onclick = ()=>{ auditPage=1; loadAudit(); };
+$('auditSearch').onkeydown = (e)=>{ if(e.key==='Enter'){ auditPage=1; loadAudit(); } };
+$('btnAuditPrev').onclick = ()=>{ auditPage--; loadAudit(); };
+$('btnAuditNext').onclick = ()=>{ auditPage++; loadAudit(); };
+$('btnAuditClose').onclick=()=>$('auditModal').classList.add('hidden');
+$('btnAuditLogout').onclick=doLogout;
+
+function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+
+// ---------- 初始化 ----------
+if (TOKEN && USERNAME) {
+  // 已有 token，但私钥需要口令重新解密，故回到登录页
+  $('logout').classList.remove('hidden');
+  $('btnAudit').classList.toggle('hidden', !IS_ADMIN);
+  $('auth').classList.remove('hidden');
+  $('app').classList.add('hidden');
+}
+</script>
+</body>
+</html>
