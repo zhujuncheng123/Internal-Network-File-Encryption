@@ -97,13 +97,16 @@ def execute(sql: str, params: tuple = ()) -> int:
 def purge_expired() -> tuple[int, list[str]]:
     """物理删除所有已过期文件：密文文件 + files 元数据 + file_keys 访问密钥。
 
+    同时为每个被删除的文件写入 audit_log 留痕（action='expire'，username=owner，
+    ip='system'），保证到期自动删除也有迹可查。
     返回 (删除数量, 被删除的 stored_name 列表)。调用方据此清理磁盘文件。
-    审计记录由调用方处理（这里只做数据与磁盘清理）。
     """
     conn = _conn()
     now = now_iso()
     rows = conn.execute(
-        "SELECT id, stored_name FROM files WHERE expires_at IS NOT NULL AND expires_at <= ?",
+        "SELECT f.id, f.stored_name, f.filename, f.owner_id, u.username AS owner_name "
+        "FROM files f LEFT JOIN users u ON u.id = f.owner_id "
+        "WHERE f.expires_at IS NOT NULL AND f.expires_at <= ?",
         (now,),
     ).fetchall()
     if not rows:
@@ -113,5 +116,13 @@ def purge_expired() -> tuple[int, list[str]]:
     marks = ",".join("?" * len(ids))
     conn.execute(f"DELETE FROM file_keys WHERE file_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM files WHERE id IN ({marks})", ids)
+    # 留痕：到期自动删除也写审计（系统动作，非用户触发）
+    for r in rows:
+        conn.execute(
+            "INSERT INTO audit_log (user_id, username, action, file_id, filename, target, ip, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (r["owner_id"], r["owner_name"] or "unknown", "expire",
+             r["id"], r["filename"], "到期自动清理", "system", now),
+        )
     conn.commit()
     return len(ids), stored_names

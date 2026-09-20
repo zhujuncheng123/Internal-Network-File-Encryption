@@ -143,7 +143,19 @@
   <div class="modal" style="width:860px;">
     <h3>操作审计日志</h3>
     <div class="row" style="margin-bottom:10px;">
-      <input id="auditSearch" placeholder="搜索 IP / 用户名 / 文件名 / 动作…" style="flex:1;">
+      <select id="auditAction" style="width:150px;">
+        <option value="">全部类型</option>
+        <option value="register">注册</option>
+        <option value="login">登录</option>
+        <option value="upload">上传</option>
+        <option value="download">下载</option>
+        <option value="share" selected>共享</option>
+        <option value="revoke">撤销</option>
+        <option value="delete">删除</option>
+        <option value="remove_access">移除访问</option>
+        <option value="expire">到期清理</option>
+      </select>
+      <input id="auditSearch" placeholder="搜索 IP / 用户名 / 文件名 / 目标…" style="flex:1;">
       <button class="btn-ghost" id="btnAuditSearch">搜索</button>
     </div>
     <div class="modal-scroll">
@@ -669,11 +681,13 @@ let auditPage = 1, auditPageSize = 50;
 
 async function loadAudit(){
   const q = $('auditSearch').value.trim();
+  const act = $('auditAction').value;
   try{
     const params = new URLSearchParams({ page: auditPage, page_size: auditPageSize });
     if (q) params.set('q', q);
+    if (act) params.set('action', act);
     const data = await (await api('/api/files/audit?' + params.toString())).json();
-    const actions = {register:'注册',login:'登录',upload:'上传',download:'下载',share:'共享',revoke:'撤销',delete:'删除',remove_access:'移除访问'};
+    const actions = {register:'注册',login:'登录',upload:'上传',download:'下载',share:'共享',revoke:'撤销',delete:'删除',remove_access:'移除访问',expire:'到期清理'};
     $('auditList').innerHTML = (data.items||[]).map(r=>`
       <tr>
         <td class="muted">${new Date(r.created_at).toLocaleString('zh-CN')}</td>
@@ -691,12 +705,13 @@ async function loadAudit(){
 }
 
 $('btnAudit').onclick = ()=>{
-  auditPage = 1; $('auditSearch').value='';
+  auditPage = 1; $('auditSearch').value=''; $('auditAction').value='share';
   $('auditModal').classList.remove('hidden');
   loadAudit();
 };
 $('btnAuditSearch').onclick = ()=>{ auditPage=1; loadAudit(); };
 $('auditSearch').onkeydown = (e)=>{ if(e.key==='Enter'){ auditPage=1; loadAudit(); } };
+$('auditAction').onchange = ()=>{ auditPage=1; loadAudit(); };
 $('btnAuditPrev').onclick = ()=>{ auditPage--; loadAudit(); };
 $('btnAuditNext').onclick = ()=>{ auditPage++; loadAudit(); };
 $('btnAuditClose').onclick=()=>$('auditModal').classList.add('hidden');

@@ -217,21 +217,29 @@ async def get_public_key(user_id: int, user: dict = Depends(current_user)):
 async def list_audit(
     user: dict = Depends(current_user),
     q: str = "",
+    action: str = "",
     page: int = 1,
     page_size: int = 50,
 ):
-    """审计日志：仅管理员可查看。支持按 IP/用户名/文件名/动作/目标搜索 + 分页。"""
+    """审计日志：仅管理员可查看。支持按 IP/用户名/文件名/动作/目标搜索 + 按动作类型过滤 + 分页。"""
     if not is_admin_user(user):
         raise HTTPException(403, "仅管理员可查看审计日志")
     page = max(1, page)
     page_size = max(1, min(200, page_size))
 
     q = q.strip()
+    action = action.strip()
     where, params = "", []
+    conds = []
     if q:
         like = f"%{q}%"
-        where = "WHERE username LIKE ? OR ip LIKE ? OR filename LIKE ? OR action LIKE ? OR target LIKE ?"
-        params = [like, like, like, like, like]
+        conds.append("(username LIKE ? OR ip LIKE ? OR filename LIKE ? OR action LIKE ? OR target LIKE ?)")
+        params += [like, like, like, like, like]
+    if action:
+        conds.append("action = ?")
+        params.append(action)
+    if conds:
+        where = "WHERE " + " AND ".join(conds)
 
     total = db.fetch_one(
         f"SELECT COUNT(*) AS c FROM audit_log {where}", params
