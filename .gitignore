@@ -6,6 +6,11 @@
 server.key
 server.crt
 
+# 企业恢复私钥（离线保管，绝不提交）
+recovery_keys/
+recovery_private.pem
+recovery_public.pem
+
 # 运行时数据：数据库 + 密文文件 + 测试账号数据
 data/
 *.bin

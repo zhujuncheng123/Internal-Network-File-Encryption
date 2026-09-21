@@ -116,6 +116,9 @@ async def register(
     private_key_wrapped: str = Form(...), # base64
     kek_salt: str = Form(...),            # base64
     kek_iv: str = Form(...),              # base64
+    recovery_wrapped: str = Form(""),     # base64 恢复封装（可选，未启用恢复密钥时为空）
+    recovery_iv: str = Form(""),          # base64
+    recovery_key_wrapped: str = Form(""), # base64
 ):
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="口令至少 8 位")
@@ -123,9 +126,12 @@ async def register(
         raise HTTPException(status_code=409, detail="用户名已存在")
     db.execute(
         "INSERT INTO users (username, password_hash, public_key, private_key_wrapped, "
-        "kek_salt, kek_iv, created_at) VALUES (?,?,?,?,?,?,?)",
+        "kek_salt, kek_iv, recovery_wrapped, recovery_iv, recovery_key_wrapped, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (username, security.hash_password(password), public_key,
-         private_key_wrapped, kek_salt, kek_iv, db.now_iso()),
+         private_key_wrapped, kek_salt, kek_iv,
+         recovery_wrapped or None, recovery_iv or None, recovery_key_wrapped or None,
+         db.now_iso()),
     )
     # 注册也记录审计
     u = db.fetch_one("SELECT * FROM users WHERE username = ?", (username,))
@@ -154,7 +160,63 @@ async def me(user: dict = Depends(current_user)):
         "private_key_wrapped": user["private_key_wrapped"],
         "kek_salt": user["kek_salt"],
         "kek_iv": user["kek_iv"],
+        "has_recovery": bool(user.get("recovery_wrapped") and user.get("recovery_key_wrapped")),
     }
+
+
+# ---------- 企业密钥托管（恢复密钥） ----------
+@app.get("/api/recovery/public-key")
+async def recovery_public_key():
+    """公开接口：返回企业恢复公钥（未配置则返回空）。注册时浏览器用它做恢复封装。"""
+    pub = db.get_config(security.RECOVERY_PUBLIC_KEY)
+    return {"configured": bool(pub), "public_key": pub or ""}
+
+
+class RecoveryWrapBody(BaseModel):
+    recovery_wrapped: str
+    recovery_iv: str
+    recovery_key_wrapped: str
+
+
+@app.post("/api/auth/recovery-wrap")
+async def set_recovery_wrap(body: RecoveryWrapBody, user: dict = Depends(current_user)):
+    """已登录用户补做/更新企业恢复封装（老账号兼容）。"""
+    db.execute(
+        "UPDATE users SET recovery_wrapped=?, recovery_iv=?, recovery_key_wrapped=? WHERE id=?",
+        (body.recovery_wrapped, body.recovery_iv, body.recovery_key_wrapped, user["id"]),
+    )
+    return {"ok": True}
+
+
+@app.get("/api/admin/recovery/status")
+async def recovery_status(user: dict = Depends(current_user)):
+    """查询企业恢复公钥是否已配置（仅管理员）。"""
+    if not is_admin_user(user):
+        raise HTTPException(403, "仅管理员可操作")
+    pub = db.get_config(security.RECOVERY_PUBLIC_KEY)
+    return {"configured": bool(pub), "public_key": pub or ""}
+
+
+class RecoveryConfigBody(BaseModel):
+    public_key: str  # base64 SPKI 企业恢复公钥
+
+
+@app.post("/api/admin/recovery/config")
+async def recovery_config(body: RecoveryConfigBody, user: dict = Depends(current_user)):
+    """导入企业恢复公钥（仅管理员）。私钥离线保管，永不进入服务器。"""
+    if not is_admin_user(user):
+        raise HTTPException(403, "仅管理员可操作")
+    pub = body.public_key.strip()
+    if not pub:
+        raise HTTPException(400, "公钥不能为空")
+    # 校验格式：必须是可解析的 SPKI 公钥
+    try:
+        from cryptography.hazmat.primitives import serialization as _ser
+        _ser.load_der_public_key(base64.b64decode(pub))
+    except Exception:
+        raise HTTPException(400, "公钥格式无效（需 base64 SPKI）")
+    db.set_config(security.RECOVERY_PUBLIC_KEY, pub)
+    return {"ok": True}
 
 
 @app.get("/api/users/search")

@@ -16,7 +16,15 @@ CREATE TABLE IF NOT EXISTS users (
     private_key_wrapped TEXT NOT NULL,  -- base64(AES-GCM加密的PKCS8私钥)
     kek_salt TEXT NOT NULL,             -- base64(PBKDF2盐)
     kek_iv TEXT NOT NULL,               -- base64(私钥封装AES-GCM IV)
+    recovery_wrapped TEXT,              -- base64(恢复AES密钥加密的私钥PKCS8) 企业密钥托管
+    recovery_iv TEXT,                   -- base64(恢复封装AES-GCM IV)
+    recovery_key_wrapped TEXT,          -- base64(RSA-OAEP企业恢复公钥封装的AES密钥)
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS system_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -72,7 +80,29 @@ def _conn() -> sqlite3.Connection:
 def init_db() -> None:
     conn = _conn()
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """老库兼容：为已有 users 表补齐企业密钥托管相关列。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    for col in ("recovery_wrapped", "recovery_iv", "recovery_key_wrapped"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+
+
+def get_config(key: str) -> str | None:
+    row = fetch_one("SELECT value FROM system_config WHERE key = ?", (key,))
+    return row["value"] if row else None
+
+
+def set_config(key: str, value: str) -> None:
+    execute(
+        "INSERT INTO system_config (key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
 
 
 def now_iso() -> str:

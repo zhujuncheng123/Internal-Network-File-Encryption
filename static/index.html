@@ -255,6 +255,21 @@ async function unwrapPrivateKey(wrappedB64, saltB64, ivB64, passphrase){
   return importPrivate(new Uint8Array(pkcs8));
 }
 
+// 用企业恢复公钥做「恢复封装」（混合加密：随机 AES 密钥加密私钥 + RSA 封装 AES 密钥）
+async function wrapForRecovery(pkcs8, recoveryPublicB64){
+  const recoveryPub = await importPublic(recoveryPublicB64);
+  const aesKey = await crypto.subtle.generateKey({ name:'AES-GCM', length:256 }, true, ['encrypt','wrapKey']);
+  const rawAes = new Uint8Array(await crypto.subtle.exportKey('raw', aesKey));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const wrapped = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, aesKey, pkcs8);
+  const keyWrapped = await crypto.subtle.encrypt({ name:'RSA-OAEP' }, recoveryPub, rawAes);
+  return {
+    recovery_wrapped: b64buf(new Uint8Array(wrapped)),
+    recovery_iv: b64buf(iv),
+    recovery_key_wrapped: b64buf(new Uint8Array(keyWrapped)),
+  };
+}
+
 // ---------- 认证 ----------
 $('btnLogin').onclick = async () => {
   $('authErr').textContent='';
@@ -272,6 +287,19 @@ $('btnLogin').onclick = async () => {
     IS_ADMIN = !!me.is_admin;
     localStorage.setItem('st_admin', IS_ADMIN ? '1' : '0');
     privateKey = await unwrapPrivateKey(me.private_key_wrapped, me.kek_salt, me.kek_iv, p);
+    // 老账号兼容：若无企业恢复封装且服务器已配恢复公钥，则自动补做
+    if(!me.has_recovery){
+      try{
+        const rpk = await (await fetch('/api/recovery/public-key')).json();
+        if(rpk.configured && rpk.public_key){
+          const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', privateKey));
+          const rec = await wrapForRecovery(privPkcs8, rpk.public_key);
+          await api('/api/auth/recovery-wrap', { method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(rec) });
+        }
+      }catch(e){ /* 补做失败不阻断登录 */ }
+    }
     enterApp();
   }catch(e){ $('authErr').textContent = e.message==='口令错误或数据损坏，无法解密' ? e.message : e.message; }
 };
@@ -288,12 +316,24 @@ $('btnRegister').onclick = async () => {
     // 用口令封装私钥
     const { wrapped, salt, iv } = await wrapPrivateKeyWithPass(privPkcs8, p);
 
+    // 若服务器已配置企业恢复公钥，则额外做恢复封装（用于忘记口令找回）
+    let rec = null;
+    try{
+      const rpk = await (await fetch('/api/recovery/public-key')).json();
+      if (rpk.configured && rpk.public_key) rec = await wrapForRecovery(privPkcs8, rpk.public_key);
+    }catch(e){ /* 恢复公钥获取失败不阻断注册 */ }
+
     const fd=new FormData();
     fd.append('username',u); fd.append('password',p);
     fd.append('public_key', b64buf(pubSpki));
     fd.append('private_key_wrapped', b64buf(wrapped));
     fd.append('kek_salt', b64buf(salt));
     fd.append('kek_iv', b64buf(iv));
+    if (rec) {
+      fd.append('recovery_wrapped', rec.recovery_wrapped);
+      fd.append('recovery_iv', rec.recovery_iv);
+      fd.append('recovery_key_wrapped', rec.recovery_key_wrapped);
+    }
     const res=await fetch('/api/auth/register',{method:'POST',body:fd});
     if(!res.ok){ const d=await res.json(); throw new Error(d.detail||'注册失败'); }
     toast('注册成功，请登录');
